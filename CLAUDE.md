@@ -75,6 +75,15 @@ Reproduction (uses self-built bazel + `reapi/split_digests.py` in this repo):
 
 `--config=nocache` (defined in `/workspaces/av/.bazelrc:91`) sets `--disk_cache= --noremote_accept_cached` so every action runs fresh and the REAPI traffic is observable. `--remote_upload_local_results=true` makes locally-sandboxed actions upload their outputs to CAS. The grpc log is a stream of length-delimited `remote_logging.LogEntry` protos (proto at `src/main/protobuf/remote_execution_log.proto`); `split_digests.py` deliberately avoids a real proto parser by grep-matching 64-char hex hashes anywhere in the binary log, which is a conservative superset of "blob known to CAS."
 
+Planned next step — Option 3: extend `genrule` so the REAPI Action digest is a first-class declared output of the rule. After patching, a consumer can write `data = [":demo_via_genrule.reapi_action_digest"]` (or similar) and the file shows up in runfiles like any other output. Required touchpoints:
+
+- `src/main/java/com/google/devtools/build/lib/rules/genrule/GenRuleBaseRule.java` — add the rule attribute (e.g. `expose_reapi_action_digest`) to the genrule schema.
+- `src/main/java/com/google/devtools/build/lib/rules/genrule/GenRuleBase.java:71` — `filesToBuild` is constructed from `ruleContext.getOutputArtifacts()`; when the new attribute is set, declare an extra implicit output Artifact (e.g. `<name>.reapi_action_digest`) and add it to `filesToBuild`.
+- `src/main/java/com/google/devtools/build/lib/rules/genrule/GenRuleAction.java:34` — `GenRuleAction extends SpawnAction`; either subclass it or add a writeable extra-output that the remote/local execution path populates with the digest content.
+- `src/main/java/com/google/devtools/build/lib/remote/RemoteExecutionService.java:593` — emit point. Right after `ActionKey actionKey = digestUtil.computeActionKey(action);`, write `<hash> <size>\n` to the extra-output Artifact path.
+
+Per-target sidecar means no whole-build aggregate file, no Starlark wrapper rule, and the file participates in normal bazel caching/invalidation. Cost: touches three places in the rule definition plus one line in the REAPI layer.
+
 Observed for the genrule build (4335 actions: 3097 internal + 1091 remote + 147 sandboxed):
 
   - Genrule Action digest: `f3a9c60a1a3005c995ee6e917ab82417c8ecc099c60ff9049f36056386cac898` (size 148).
