@@ -1,4 +1,6 @@
-<!-- Notes for Claude. Save only true facts verified against the source tree at the time of writing. Avoid excessive markdown, headers, or speculation. -->
+<!-- Notes for Claude. Save only true facts verified against the source tree at the time of writing. Avoid excessive markdown, headers, or speculation. Prune stale or irrelevant facts when they no longer match the code. -->
+
+Goal of this branch: produce a bazel binary that emits an explanation of every digest it submits to the remote CAS via REAPI, so the user can download those digests directly from CAS and reassemble the build output binary locally without re-running bazel.
 
 Branch `expose-reapi-digest` (fork `git@github.com:kuddai/bazel.git`) tracks experiments to expose Remote Execution API digests.
 
