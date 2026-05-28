@@ -19,3 +19,12 @@ Actual upload happens in `UploadManifest.uploadAsync` at `src/main/java/com/goog
 Remote-executed actions are not uploaded via this flag — the remote executor populates the AC itself.
 
 `--remote_local_fallback` results still respect `--remote_upload_local_results` (gate is shared).
+
+REAPI Merkle model (verified in `third_party/remoteapis/build/bazel/remote/execution/v2/remote_execution.proto`):
+- `Action` (line 480) holds `command_digest` and `input_root_digest`. The latter points to a `Directory` (854), whose `repeated DirectoryNode directories` reference child `Directory` blobs by digest, forming a Merkle DAG of inputs.
+- `ActionResult` (1056), keyed by Action digest in the AC, lists `output_files` (each with digest), `output_directories` (each a `Tree` digest), `stdout_digest`, `stderr_digest`. `Tree` (1259) is one blob containing root `Directory` plus all descendants flattened.
+- Consequence: one Action digest is a sufficient root. Walking Action → Command + input Merkle tree + ActionResult outputs reaches every blob the action needed and produced. The protocol already supports the "one digest, recursively download everything" workflow; bazel just doesn't currently surface the digest for a given target.
+
+For an `av_py_binary` like `//junk/kuddai/demo:main`, bazel does not emit a single "build the whole binary" action — the target is split into many per-rule actions, each with its own digest. The candidate single root is the terminal py_binary action (manifest/launcher generation), whose declared inputs include the full runfiles set, so its `input_root_digest` Merkle-covers every runfile (`.so`, interpreter, `.py`). Surfacing that one digest is the concrete first deliverable of this branch.
+
+Stage 1 (current): build bazel from this source tree as-is (no source modifications) and use the resulting binary to build and run `//junk/kuddai/demo:main` in `/workspaces/av`. That gives a clean, unmodified baseline before any instrumentation.
