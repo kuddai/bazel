@@ -37,3 +37,15 @@ Test harness: the self-built binary at `/workspaces/bazel/bazel-bin/src/bazel` i
       --config=remote --remote_upload_local_results=true
 
 `--config=remote` resolves (per `/workspaces/av/.bazelrc:93-102`) to Buildbarn at `grpc://frontend.kansas-gimel.avride.ai:19080` for both `--remote_cache` and `--remote_executor`. Default in that repo is `--remote_upload_local_results=false`; we override to `true` so locally-executed actions actually upload to the shared CAS/AC. The target name in the BUILD file is `demo` (not `main`); the source file is `main.py`.
+
+Stage 2 observations (no source modifications; logs in `/workspaces/av/.tmp/`):
+
+For the demo target a clean build with `--config=nocache` (busts disk cache + `--noremote_accept_cached`) yields 6359 actions: 5023 bazel-internal + 1090 remote-executed + 246 local sandboxed. Only the latter 1336 actions cross the REAPI boundary. The grpc log (`--remote_grpc_log`) shows: 1 GetCapabilities, 1336 FindMissingBlobs, 1090 Execute, 1090 ByteStream.Read, 1378 ByteStream.Write, 246 UpdateActionResult.
+
+The 5023 internal actions write outputs directly from Java and never produce an REAPI `Action` proto. On the demo target specifically they are precisely the actions that build the runtime entrypoint: the bash launcher (`TemplateExpand` → `bazel-bin/.../demo`), the runfiles index (`SourceSymlinkManifest` → `demo.runfiles_manifest`), the loader and stage2 bootstrap (`TemplateExpand`), the repo mapping (`RepoMappingManifest`), the venv configs (`FileWrite`), the `_solib_k8/` symlinks (`SolibSymlink`/`UnresolvedSymlink`), and the runfiles aggregator (`Middleman`). None of these outputs get uploaded to CAS by stock bazel.
+
+What does land in CAS for this target: outputs of the `PyCompile` actions (`.pyc` for every Python file) and outputs of the `PatchRUNPATH` actions (RPATH-rewritten `.so` files). Together they cover the bulk content of the runfiles tree. The missing piece is the small set of bazel-generated glue files above — most importantly `demo.runfiles_manifest`, which is the index mapping every runfile path to a concrete file. Without it (and the launcher), the CAS blobs cannot be reassembled into a working binary.
+
+There is no single REAPI Action digest today that represents an `av_py_binary` and roots a Merkle walk to every blob; the terminal `Middleman`/`SourceSymlinkManifest`/launcher `TemplateExpand` actions have no REAPI Action proto. Exposing such a digest (or upgrading those internal actions to spawnable ones) is the next concrete instrumentation target.
+
+Detailed counts and digest examples live in `/workspaces/av/.tmp/stage2_findings.md`.
