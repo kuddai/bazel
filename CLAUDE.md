@@ -49,3 +49,35 @@ What does land in CAS for this target: outputs of the `PyCompile` actions (`.pyc
 There is no single REAPI Action digest today that represents an `av_py_binary` and roots a Merkle walk to every blob; the terminal `Middleman`/`SourceSymlinkManifest`/launcher `TemplateExpand` actions have no REAPI Action proto. Exposing such a digest (or upgrading those internal actions to spawnable ones) is the next concrete instrumentation target.
 
 Detailed counts and digest examples live in `/workspaces/av/.tmp/stage2_findings.md`.
+
+Genrule trick — a `genrule` whose `tools` attribute references the binary becomes a single REAPI Action whose `input_root_digest` is a Merkle root over the binary's full runfiles tree. Stock bazel emits the action digest in the spawn log; no source changes required. For the `av` repo we added:
+
+    genrule(
+        name = "demo_via_genrule",
+        outs = ["demo_output.txt"],
+        cmd = "$(location :demo) > $@",
+        tools = [":demo"],
+    )
+
+Reproduction (uses self-built bazel + `reapi/split_digests.py` in this repo):
+
+    /workspaces/bazel/bazel-bin/src/bazel --output_base=/home/vscode/.cache/bazel-from-source clean
+    /workspaces/bazel/bazel-bin/src/bazel \
+      --output_base=/home/vscode/.cache/bazel-from-source \
+      build //junk/kuddai/demo:demo_via_genrule \
+      --config=remote --config=nocache --remote_upload_local_results=true \
+      --execution_log_json_file=/workspaces/av/.tmp/exec_genrule.json \
+      --remote_grpc_log=/workspaces/av/.tmp/grpc_genrule.binlog
+    python3 /workspaces/bazel/reapi/split_digests.py \
+      /workspaces/av/.tmp/exec_genrule.json \
+      /workspaces/av/.tmp/grpc_genrule.binlog \
+      /workspaces/av/.tmp
+
+`--config=nocache` (defined in `/workspaces/av/.bazelrc:91`) sets `--disk_cache= --noremote_accept_cached` so every action runs fresh and the REAPI traffic is observable. `--remote_upload_local_results=true` makes locally-sandboxed actions upload their outputs to CAS. The grpc log is a stream of length-delimited `remote_logging.LogEntry` protos (proto at `src/main/protobuf/remote_execution_log.proto`); `split_digests.py` deliberately avoids a real proto parser by grep-matching 64-char hex hashes anywhere in the binary log, which is a conservative superset of "blob known to CAS."
+
+Observed for the genrule build (4335 actions: 3097 internal + 1091 remote + 147 sandboxed):
+
+  - Genrule Action digest: `f3a9c60a1a3005c995ee6e917ab82417c8ecc099c60ff9049f36056386cac898` (size 148).
+  - 9684 (path, file-digest) pairs across logged spawns; 9525 of those file digests appear in the grpc log → present in CAS. The 159 not-in-CAS entries are inputs of locally-sandboxed PatchRUNPATH actions (Nix-store source `.so`/interpreter files); nothing remote references them directly, so bazel never uploads them.
+  - 1238 unique REAPI Action digests in the spawn log; all 1238 appear in the grpc log.
+  - The bazel-internal action outputs (launcher, `demo.runfiles_manifest`, repo_mapping, venv configs, `_solib_k8/` symlinks) are not produced by any REAPI Action, but they DO end up in CAS — bazel uploads them as input blobs when constructing the genrule's `input_root_digest`. So most of what's needed to reconstruct the binary tree is already addressable from the single Genrule Action digest above; walking its Merkle DAG recursively yields every blob the worker needs to execute it.
