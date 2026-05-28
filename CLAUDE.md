@@ -28,3 +28,12 @@ REAPI Merkle model (verified in `third_party/remoteapis/build/bazel/remote/execu
 For an `av_py_binary` like `//junk/kuddai/demo:main`, bazel does not emit a single "build the whole binary" action — the target is split into many per-rule actions, each with its own digest. The candidate single root is the terminal py_binary action (manifest/launcher generation), whose declared inputs include the full runfiles set, so its `input_root_digest` Merkle-covers every runfile (`.so`, interpreter, `.py`). Surfacing that one digest is the concrete first deliverable of this branch.
 
 Stage 1 (current): build bazel from this source tree as-is (no source modifications) and use the resulting binary to build and run `//junk/kuddai/demo:main` in `/workspaces/av`. That gives a clean, unmodified baseline before any instrumentation.
+
+Test harness: the self-built binary at `/workspaces/bazel/bazel-bin/src/bazel` is invoked against the demo target with a dedicated server to avoid clashing with the workspace's bazelisk-spawned one — e.g.:
+
+    /workspaces/bazel/bazel-bin/src/bazel \
+      --output_base=/home/vscode/.cache/bazel-from-source \
+      build //junk/kuddai/demo \
+      --config=remote --remote_upload_local_results=true
+
+`--config=remote` resolves (per `/workspaces/av/.bazelrc:93-102`) to Buildbarn at `grpc://frontend.kansas-gimel.avride.ai:19080` for both `--remote_cache` and `--remote_executor`. Default in that repo is `--remote_upload_local_results=false`; we override to `true` so locally-executed actions actually upload to the shared CAS/AC. The target name in the BUILD file is `demo` (not `main`); the source file is `main.py`.
